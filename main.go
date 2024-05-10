@@ -85,7 +85,7 @@ func monitorBridge(chainId uint64, scopedBridge *bridge.Bridge) {
 				eventData := eventDecoded{}
 				eventData.Amount = request.Amount
 				eventData.Destination = request.Recipient
-				//eventData.Token = request.Token
+				eventData.Token = request.Token
 				eventData.OriginChainID = request.OriginChainID
 				eventData.DestinationChainID = request.DestinationChainID
 				FinishBridge(eventData)

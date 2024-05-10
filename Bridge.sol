@@ -11,16 +11,18 @@ interface IERC20USDT {
 }
 
 contract Bridge {
-    event RequestBridge(
-        uint amount,
-        uint originChainID,
-        uint destinationChainID,
-        address recipient,
-        bytes extraData
-    );
     address admin;
     bool preCharge;
-
+    uint sequenceNumber;
+    struct RequestBridge {
+        uint amount;
+        uint64 originChainID;
+        uint64 destinationChainID;
+        address recipient;
+        bytes extraData;
+        uint blockNumber;
+        address token;
+    }
     mapping(address => mapping(uint => uint))
         public tokenToChainToEtherTollFlat;
     mapping(address => mapping(uint => uint))
@@ -30,7 +32,7 @@ contract Bridge {
         public tokenToChainToInKindFeeFlat;
     mapping(address => mapping(uint => uint))
         public tokenToChainToInKindFeeRatio;
-
+    mapping(uint => RequestBridge) public requests;
     uint constant ratioCap = 10 ** 18;
 
     constructor() {
@@ -63,7 +65,7 @@ contract Bridge {
 
     function requestBridge(
         uint amount,
-        uint destinationChainID,
+        uint64 destinationChainID,
         address destinationAddress,
         bytes calldata extraData,
         address token
@@ -80,7 +82,7 @@ contract Bridge {
         } else {
             require(msg.value > etherDue, "Toll paid is insufficient");
         }
-
+        require(amount > 0);
         if (preCharge) {
             uint inKindFee = tokenToChainToInKindFeeFlat[token][
                 destinationChainID
@@ -95,12 +97,14 @@ contract Bridge {
                 address(this),
                 inKindFee + amount
             );
-            emit RequestBridge(
+            requests[sequenceNumber] = RequestBridge(
                 amount,
-                block.chainid,
+                uint64(block.chainid),
                 destinationChainID,
                 destinationAddress,
-                extraData
+                extraData,
+                block.number,
+                token
             );
         } else {
             IERC20(token).transferFrom(msg.sender, address(this), amount);
@@ -109,15 +113,17 @@ contract Bridge {
                 ((amount *
                     tokenToChainToInKindFeeRatio[token][destinationChainID]) /
                     ratioCap);
-            emit RequestBridge(
+            requests[sequenceNumber] = RequestBridge(
                 amount - tokenToChainToInKindFeeFlat[token][destinationChainID],
-                block.chainid,
+                uint64(block.chainid),
                 destinationChainID,
                 destinationAddress,
-                extraData
+                extraData,
+                block.number,
+                token
             );
         }
-
+        sequenceNumber++;
         return true;
     }
 
@@ -151,6 +157,14 @@ contract Bridge {
                 tokenToChainToEtherTollRatio[token][destinationChain] = fee;
             }
         }
+    }
+
+    function checkForValidRequest(
+        uint num
+    ) public view returns (RequestBridge memory) {
+        require(requests[num].amount > 0, "Does not exist");
+        require(requests[num].blockNumber < block.number - 5, "Too soon");
+        return requests[num];
     }
 
     function withdrawERC20(
