@@ -3,16 +3,17 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
 	"bridge/bridge"
 	"bridge/ierc20"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -22,9 +23,10 @@ import (
 )
 
 var (
-	bridgeABI   abi.ABI
-	settings    Settings
-	zeroAddress common.Address = common.HexToAddress("0x0000000000000000000000000000000000000000")
+	bridgeABI       abi.ABI
+	settings        Settings
+	zeroAddress     common.Address    = common.HexToAddress("0x0000000000000000000000000000000000000000")
+	sequenceNumbers map[uint64]uint64 = make(map[uint64]uint64)
 )
 
 type eventDecoded struct {
@@ -36,6 +38,7 @@ type eventDecoded struct {
 }
 
 func main() {
+	loadSequenceNumbers()
 	contractABI, err := abi.JSON(strings.NewReader(string(bridge.BridgeABI)))
 	if err != nil {
 		log.Fatal(err)
@@ -51,10 +54,15 @@ func main() {
 	settings.Address = crypto.PubkeyToAddress(*publicKeyECDSA)
 
 	for address, chainID := range settings.AddressToChainID {
+		settings.ChainIDToABI[chainID], err = bridge.NewBridge(address, settings.ChainIDToClients[chainID])
+		if err != nil {
+			log.Fatalln(err)
+		}
 		//listen
-		go subscribeToEventLogs(settings.ChainIDToClients[chainID], address)
+		go monitorBridge(chainID, settings.ChainIDToABI[chainID])
+
 	}
-	ticker := time.NewTicker(60 * time.Hour)
+	ticker := time.NewTicker(1 * time.Hour)
 	counter := 0
 	for {
 		select {
@@ -64,39 +72,29 @@ func main() {
 		}
 	}
 }
-func subscribeToEventLogs(client *ethclient.Client, bridgeAddress common.Address) {
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{bridgeAddress},
-	}
-	logs := make(chan types.Log)
-	sub, err := client.SubscribeFilterLogs(context.Background(), query, logs)
-	if err != nil {
-		log.Fatal(err)
-	}
+func monitorBridge(chainId uint64, scopedBridge *bridge.Bridge) {
+	ticker := time.NewTicker(10 * time.Second)
 
 	for {
 		select {
-		case err := <-sub.Err():
-			log.Fatal(err)
-		case vLog := <-logs:
-			processLog(vLog)
+		case <-ticker.C:
+			request, err := scopedBridge.CheckForValidRequest(&bind.CallOpts{Pending: false}, big.NewInt(int64(sequenceNumbers[chainId])))
+			if err != nil {
+				log.Println(err)
+			} else if request.Amount.Cmp(big.NewInt(0)) == 1 {
+				eventData := eventDecoded{}
+				eventData.Amount = request.Amount
+				eventData.Destination = request.Recipient
+				//eventData.Token = request.Token
+				eventData.OriginChainID = request.OriginChainID
+				eventData.DestinationChainID = request.DestinationChainID
+				FinishBridge(eventData)
+			}
 		}
 	}
+
 }
-func processLog(vLog types.Log) {
-	eventData := eventDecoded{}
-	eventDataMapInterface := make(map[string]interface{})
-	err := bridgeABI.UnpackIntoMap(eventDataMapInterface, "OrderPlaced", vLog.Data)
-	if err != nil {
-		fmt.Println("Failed to unpack:", err)
-	}
-	eventData.Amount = eventDataMapInterface["amount"].(*big.Int)
-	eventData.Destination = eventDataMapInterface["recipient"].(common.Address)
-	eventData.Token = eventDataMapInterface["token"].(common.Address)
-	eventData.OriginChainID = eventDataMapInterface["originChainID"].(*big.Int).Uint64()
-	eventData.DestinationChainID = eventDataMapInterface["destinationChainID"].(*big.Int).Uint64()
-	FinishBridge(eventData)
-}
+
 func FinishBridge(eventData eventDecoded) {
 	client := settings.ChainIDToClients[eventData.DestinationChainID]
 	if eventData.Token.Cmp(zeroAddress) == 0 {
@@ -124,6 +122,10 @@ func FinishBridge(eventData eventDecoded) {
 		err = client.SendTransaction(context.Background(), signedTx)
 		if err != nil {
 			log.Fatal(err)
+		} else {
+			log.Println("TX sent: ", tx.Hash())
+			sequenceNumbers[eventData.OriginChainID]++
+			saveSequenceNumbers()
 		}
 	} else {
 		token, err := ierc20.NewIERC20(eventData.Token, client)
@@ -134,7 +136,9 @@ func FinishBridge(eventData eventDecoded) {
 		if err != nil {
 			log.Println("Error transferring tokens: ", err.Error())
 		} else {
-			log.Println("TX hash: ", tx.Hash())
+			log.Println("TX sent: ", tx.Hash())
+			sequenceNumbers[eventData.OriginChainID]++
+			saveSequenceNumbers()
 		}
 
 	}
@@ -160,4 +164,12 @@ func generateAuth(client *ethclient.Client, chainId uint64) *bind.TransactOpts {
 		}
 	}
 	return nil
+}
+func saveSequenceNumbers() {
+	jsonString, _ := json.Marshal(sequenceNumbers)
+	os.WriteFile("sequenceNumbers.json", jsonString, os.ModePerm)
+}
+func loadSequenceNumbers() {
+	file, _ := os.ReadFile("sequenceNumbers.json")
+	json.Unmarshal(file, &sequenceNumbers)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bridge/bridge"
 	"crypto/ecdsa"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ type Settings struct {
 	ChainIDToAddress map[uint64]common.Address
 	AddressToChainID map[common.Address]uint64
 	ChainIDToClients map[uint64]*ethclient.Client
+	ChainIDToABI     map[uint64]*bridge.Bridge
 }
 
 func ReadConfig(filePath string) Settings {
