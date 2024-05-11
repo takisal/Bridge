@@ -92,11 +92,7 @@ contract Bridge {
                 ((amount *
                     tokenToChainToInKindFeeRatio[token][destinationChainID]) /
                     ratioCap);
-            IERC20(token).transferFrom(
-                msg.sender,
-                address(this),
-                inKindFee + amount
-            );
+            IERC20(token).transferFrom(msg.sender, admin, inKindFee + amount);
             requests[sequenceNumber] = RequestBridge(
                 amount,
                 uint64(block.chainid),
@@ -107,7 +103,7 @@ contract Bridge {
                 token
             );
         } else {
-            IERC20(token).transferFrom(msg.sender, address(this), amount);
+            IERC20(token).transferFrom(msg.sender, admin, amount);
             amount =
                 amount -
                 ((amount *
@@ -123,6 +119,7 @@ contract Bridge {
                 token
             );
         }
+        payable(admin).transfer(msg.value);
         sequenceNumber++;
         return true;
     }
